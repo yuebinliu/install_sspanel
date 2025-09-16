@@ -65,13 +65,13 @@ echo "下载SSPanel..."
 # 方法1: 直接下载发布版压缩包
 wget https://github.com/Anankke/SSPanel-UIM/archive/refs/tags/$PANEL_VERSION.zip -O sspanel.zip
 unzip sspanel.zip
-mv SSPanel-Uim-$PANEL_VERSION/* .
-mv SSPanel-Uim-$PANEL_VERSION/.* . 2>/dev/null || true
-rm -rf SSPanel-Uim-$PANEL_VERSION sspanel.zip
+mv SSPanel-UIM-$PANEL_VERSION/* .
+mv SSPanel-UIM-$PANEL_VERSION/.* . 2>/dev/null || true
+rm -rf SSPanel-UIM-$PANEL_VERSION sspanel.zip
 
 # 或者方法2: 使用无需认证的git下载（如果上面的方法失败）
-# git clone https://github.com/sspanel-uim/SSPanel-Uim.git . --depth=1
-# git checkout v$PANEL_VERSION
+# git clone https://github.com/Anankke/SSPanel-UIM.git . --depth=1
+# git checkout $PANEL_VERSION
 
 # 安装PHP依赖
 echo "安装PHP依赖..."
