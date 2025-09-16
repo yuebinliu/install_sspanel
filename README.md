@@ -6,7 +6,6 @@
 1. **保存脚本**：
 ```bash
 wget https://raw.githubusercontent.com/yuebinliu/install_sspanel/refs/heads/main/install_sspanel.sh
-#请先修改DOMAIN="yuebin.uk"
 nano install_sspanel.sh
 chmod +x install_sspanel.sh
 ```
