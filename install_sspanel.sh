@@ -11,7 +11,7 @@ DB_NAME="sspanel"
 DB_USER="sspanel_user"
 DB_PASSWORD=$(openssl rand -base64 16 | tr -d '/+' | cut -c1-16)
 MYSQL_ROOT_PASSWORD=$(openssl rand -base64 16 | tr -d '/+' | cut -c1-16)
-PANEL_VERSION="2024.10.0"  # 最新稳定版本
+PANEL_VERSION="25.1.0"  # 最新稳定版本
 
 echo "=========================================="
 echo "SSPanel 安装脚本"
@@ -60,10 +60,18 @@ echo "创建网站目录..."
 mkdir -p /www/wwwroot/$DOMAIN
 cd /www/wwwroot/$DOMAIN
 
-# 下载SSPanel
+# 下载SSPanel (使用无需认证的方式)
 echo "下载SSPanel..."
-git clone https://github.com/sspanel-uim/SSPanel-Uim.git .
-git checkout v$PANEL_VERSION
+# 方法1: 直接下载发布版压缩包
+wget https://github.com/sspanel-uim/SSPanel-Uim/archive/refs/tags/$PANEL_VERSION.zip -O sspanel.zip
+unzip sspanel.zip
+mv SSPanel-Uim-$PANEL_VERSION/* .
+mv SSPanel-Uim-$PANEL_VERSION/.* . 2>/dev/null || true
+rm -rf SSPanel-Uim-$PANEL_VERSION sspanel.zip
+
+# 或者方法2: 使用无需认证的git下载（如果上面的方法失败）
+# git clone https://github.com/sspanel-uim/SSPanel-Uim.git . --depth=1
+# git checkout v$PANEL_VERSION
 
 # 安装PHP依赖
 echo "安装PHP依赖..."
@@ -151,3 +159,16 @@ echo "SSPanel 数据库密码: $DB_PASSWORD"
 echo "应用密钥: $APP_KEY"
 echo "网站根目录: /www/wwwroot/$DOMAIN"
 echo "=========================================="
+
+# 显示后续步骤
+echo ""
+echo "后续步骤："
+echo "1. 运行数据库迁移："
+echo "   cd /www/wwwroot/$DOMAIN && php xcat Migration latest"
+echo "2. 创建管理员账户："
+echo "   cd /www/wwwroot/$DOMAIN && php xcat User createAdmin"
+echo "3. 设置定时任务："
+echo "   crontab -u www-data -e"
+echo "   添加："
+echo "   * * * * * php /www/wwwroot/$DOMAIN/xcat Job CheckJob"
+echo "   0 * * * * php /www/wwwroot/$DOMAIN/xcat Job DailyJob"
