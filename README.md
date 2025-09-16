@@ -1,6 +1,7 @@
 # install_sspanel
 
 ## 使用说明
+此脚本适合debian12使用，运行前请先修改DOMAIN="yuebin.uk"为你自己的域名。
 
 1. **保存脚本**：
 ```bash
