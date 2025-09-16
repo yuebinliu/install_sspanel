@@ -63,7 +63,7 @@ cd /www/wwwroot/$DOMAIN
 # 下载SSPanel (使用无需认证的方式)
 echo "下载SSPanel..."
 # 方法1: 直接下载发布版压缩包
-wget https://github.com/sspanel-uim/SSPanel-Uim/archive/refs/tags/$PANEL_VERSION.zip -O sspanel.zip
+wget https://github.com/Anankke/SSPanel-UIM/archive/refs/tags/$PANEL_VERSION.zip -O sspanel.zip
 unzip sspanel.zip
 mv SSPanel-Uim-$PANEL_VERSION/* .
 mv SSPanel-Uim-$PANEL_VERSION/.* . 2>/dev/null || true
