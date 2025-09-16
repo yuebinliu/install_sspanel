@@ -127,22 +127,41 @@ sed -i 's/^post_max_size = .*/post_max_size = 100M/' /etc/php/8.2/fpm/php.ini
 systemctl restart php8.2-fpm
 
 # 创建环境配置文件
-cp .config.example.php .config.php
-cp .env.example .env
+cp config/.config.example.php config/.config.php
+cp config/appprofile.example.php config/appprofile.php
 
 # 生成密钥
 APP_KEY=$(php -r "echo 'base64:' . base64_encode(random_bytes(32));")
 
 # 配置环境文件
-sed -i "s/#'app_key' => ''/'app_key' => '$APP_KEY'/" .config.php
-sed -i "s/#'database_driver' => 'mysql'/'database_driver' => 'mysql'/" .config.php
-sed -i "s/#'database_host' => 'localhost'/'database_host' => 'localhost'/" .config.php
-sed -i "s/#'database_database' => ''/'database_database' => '$DB_NAME'/" .config.php
-sed -i "s/#'database_username' => ''/'database_username' => '$DB_USER'/" .config.php
-sed -i "s/#'database_password' => ''/'database_password' => '$DB_PASSWORD'/" .config.php
-sed -i "s/#'database_charset' => 'utf8'/'database_charset' => 'utf8mb4'/" .config.php
-sed -i "s/#'database_collation' => 'utf8_unicode_ci'/'database_collation' => 'utf8mb4_unicode_ci'/" .config.php
+sed -i "s|https://your-domain.com|https://$DOMAIN|g" config/.config.php
+sed -i "s|$_ENV\['db_host'\] = '127.0.0.1';|$_ENV['db_host'] = 'localhost';|g" config/.config.php
+sed -i "s|$_ENV\['db_database'\] = 'sspanel';|$_ENV['db_database'] = '$DB_NAME';|g" config/.config.php
+sed -i "s|$_ENV\['db_username'\] = 'sspanel';|$_ENV['db_username'] = '$DB_USER';|g" config/.config.php
+sed -i "s|$_ENV\['db_password'\] = 'password';|$_ENV['db_password'] = '$DB_PASSWORD';|g" config/.config.php
 
+# 设置文件权限 - 按照官方最佳实践
+echo "设置文件权限..."
+
+# 设置基础权限
+chown -R www-data:www-data /www/wwwroot/$DOMAIN
+find /www/wwwroot/$DOMAIN -type d -exec chmod 755 {} \;
+find /www/wwwroot/$DOMAIN -type f -exec chmod 644 {} \;
+
+# 设置需要写权限的目录
+chmod -R 777 /www/wwwroot/$DOMAIN/storage
+chmod 775 /www/wwwroot/$DOMAIN/public/clients
+
+# 确保 storage 子目录存在且可写
+mkdir -p /www/wwwroot/$DOMAIN/storage/framework/smarty/{cache,compile}
+mkdir -p /www/wwwroot/$DOMAIN/storage/framework/twig/cache
+chmod -R 777 /www/wwwroot/$DOMAIN/storage/framework
+
+# 配置文件权限（初次安装需要写权限，安装后可改为只读）
+chmod 664 /www/wwwroot/$DOMAIN/config/.config.php
+[ -f "/www/wwwroot/$DOMAIN/config/appprofile.php" ] && chmod 664 /www/wwwroot/$DOMAIN/config/appprofile.php
+
+echo "权限设置完成"
 echo "=========================================="
 echo "安装完成！请继续以下步骤："
 echo "1. 访问 http://$DOMAIN 完成安装"
