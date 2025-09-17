@@ -134,11 +134,13 @@ install_redis() {
 }
 
 # 安装PHP
+# 安装PHP
 install_php() {
     log "安装PHP 8.2..."
     
     if [[ "$OS_ID" == "ubuntu" ]] || [[ "$OS_ID" == "debian" ]]; then
         # 添加PHP PPA (支持Debian 12)
+        apt install -y software-properties-common
         add-apt-repository -y ppa:ondrej/php
         apt update
         
@@ -181,6 +183,12 @@ install_php() {
             systemctl enable php82-php-fpm
             systemctl start php82-php-fpm
         fi
+    fi
+    
+    # 验证PHP安装
+    if ! command -v php &> /dev/null; then
+        error "PHP安装失败，php命令未找到"
+        exit 1
     fi
     
     success "PHP安装完成"
