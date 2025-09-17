@@ -73,73 +73,32 @@ install_dependencies() {
 }
 
 # 安装MySQL (支持Debian 12)
-install_mysql() {
-    log "安装MySQL..."
+install_mariadb() {
+    log "安装MariaDB..."
     
-    if command -v mysql &> /dev/null; then
-        warning "MySQL 已经安装，跳过安装步骤"
+    if command -v mariadb &> /dev/null || command -v mysql &> /dev/null; then
+        warning "MariaDB/MySQL 已经安装，跳过安装步骤"
         return
     fi
     
-    if [[ "$OS_ID" == "ubuntu" ]] || [[ "$OS_ID" == "debian" ]]; then
-        # 使用MySQL官方APT仓库 (支持Debian 12)
-        log "添加MySQL官方APT仓库..."
-        
-        # 下载并安装MySQL APT仓库
-        wget https://dev.mysql.com/get/mysql-apt-config_0.8.28-1_all.deb
-        if [ $? -eq 0 ]; then
-            dpkg -i mysql-apt-config_0.8.28-1_all.deb
-            apt update
-        else
-            # 如果特定版本下载失败，使用通用方法
-            log "使用通用方法安装MySQL..."
-            wget https://dev.mysql.com/get/mysql-apt-config_latest.deb
-            dpkg -i mysql-apt-config_latest.deb
-            apt update
-        fi
-        
-        # 安装MySQL Server
-        apt install -y mysql-server mysql-client
-        
-        systemctl start mysql
-        systemctl enable mysql
-        
-    elif [[ "$OS_ID" == "centos" ]] || [[ "$OS_ID" == "rocky" ]]; then
-        # 添加MySQL社区源
-        rpm -Uvh https://dev.mysql.com/get/mysql80-community-release-el7-6.noarch.rpm
-        yum install -y mysql-community-server mysql-community-client
-        systemctl start mysqld
-        systemctl enable mysqld
-        
-        # 获取临时密码并修改
-        MYSQL_TEMP_PASSWORD=$(grep 'temporary password' /var/log/mysqld.log | awk '{print $NF}')
-        if [ ! -z "$MYSQL_TEMP_PASSWORD" ]; then
-            mysql --connect-expired-password -u root -p"$MYSQL_TEMP_PASSWORD" <<EOF
-ALTER USER 'root'@'localhost' IDENTIFIED BY '$mysql_root_password';
-FLUSH PRIVILEGES;
-EOF
-        else
-            # 如果没有临时密码，尝试空密码登录
-            mysql -u root <<EOF
-ALTER USER 'root'@'localhost' IDENTIFIED BY '$mysql_root_password';
-FLUSH PRIVILEGES;
-EOF
-        fi
-    fi
+    # 安装MariaDB Server和客户端
+    apt install -y mariadb-server mariadb-client
     
-    # MySQL安全设置
-    log "执行MySQL安全设置..."
-    if [[ "$OS_ID" == "ubuntu" ]] || [[ "$OS_ID" == "debian" ]]; then
-        mysql -u root -p"$mysql_root_password" <<EOF
+    systemctl start mariadb
+    systemctl enable mariadb
+    
+    # MariaDB安全设置
+    log "执行MariaDB安全设置..."
+    mysql -u root <<EOF
+ALTER USER 'root'@'localhost' IDENTIFIED BY '$mysql_root_password';
 DELETE FROM mysql.user WHERE User='';
 DELETE FROM mysql.user WHERE User='root' AND Host NOT IN ('localhost', '127.0.0.1', '::1');
 DROP DATABASE IF EXISTS test;
 DELETE FROM mysql.db WHERE Db='test' OR Db='test\\_%';
 FLUSH PRIVILEGES;
 EOF
-    fi
     
-    success "MySQL安装完成"
+    success "MariaDB安装完成"
 }
 
 # 安装Redis
@@ -313,9 +272,9 @@ configure_firewall() {
 create_database() {
     log "创建SSPanel数据库..."
     
-    # 测试MySQL连接
+    # 测试MariaDB连接
     if ! mysql -u root -p"$mysql_root_password" -e "SELECT 1;" &> /dev/null; then
-        error "无法连接到MySQL，请检查root密码是否正确"
+        error "无法连接到MariaDB，请检查root密码是否正确"
         exit 1
     fi
     
@@ -637,7 +596,7 @@ main() {
     check_os
     get_user_input
     install_dependencies
-    install_mysql
+    install_mariadb
     install_redis
     install_php
     install_nodejs_yarn
