@@ -1,0 +1,298 @@
+#!/bin/bash
+
+# SSPanel 安装脚本 for Debian 12
+# 域名: yuebin.uk
+
+set -e
+
+# 配置变量
+DOMAIN="yuebin.uk"
+DB_NAME="sspanel"
+DB_USER="sspanel"
+DB_PASSWORD=$(openssl rand -base64 16 | tr -d '/+' | cut -c1-16)
+MYSQL_ROOT_PASSWORD=$(openssl rand -base64 16 | tr -d '/+' | cut -c1-16)
+PANEL_VERSION="25.1.0"
+APP_KEY=$(openssl rand -base64 32)
+MU_KEY=$(openssl rand -base64 16)
+
+# 日志记录
+LOG_FILE="/var/log/sspanel_install.log"
+exec > >(tee -a "$LOG_FILE") 2>&1
+
+echo "=========================================="
+echo "SSPanel 安装脚本"
+echo "域名: $DOMAIN"
+echo "安装日志: $LOG_FILE"
+echo "=========================================="
+
+# 错误检查函数
+check_command() {
+    if [ $? -ne 0 ]; then
+        echo "错误: $1 执行失败"
+        exit 1
+    fi
+}
+
+# 更新系统
+echo "更新系统包..."
+apt update && apt upgrade -y
+check_command "系统更新"
+
+# 安装必要软件
+echo "安装必要软件..."
+apt install -y curl wget git unzip nginx mariadb-server redis-server php8.2-fpm \
+php8.2-common php8.2-mysql php8.2-gd php8.2-mbstring php8.2-xml php8.2-curl \
+php8.2-bcmath php8.2-zip php8.2-intl php8.2-redis certbot python3-certbot-nginx
+check_command "软件安装"
+
+# 配置MySQL
+echo "配置MySQL..."
+systemctl start mysql
+systemctl enable mysql
+
+# 安全设置MySQL
+mysql -u root <<EOF
+ALTER USER 'root'@'localhost' IDENTIFIED BY '$MYSQL_ROOT_PASSWORD';
+DELETE FROM mysql.user WHERE User='';
+DELETE FROM mysql.user WHERE User='root' AND Host NOT IN ('localhost', '127.0.0.1', '::1');
+DROP DATABASE IF EXISTS test;
+DELETE FROM mysql.db WHERE Db='test' OR Db='test\\_%';
+FLUSH PRIVILEGES;
+EOF
+check_command "MySQL安全配置"
+
+# 创建SSPanel数据库
+mysql -u root -p$MYSQL_ROOT_PASSWORD <<EOF
+CREATE DATABASE $DB_NAME CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+CREATE USER '$DB_USER'@'localhost' IDENTIFIED BY '$DB_PASSWORD';
+GRANT ALL PRIVILEGES ON $DB_NAME.* TO '$DB_USER'@'localhost';
+FLUSH PRIVILEGES;
+EOF
+check_command "数据库创建"
+
+# 安装Composer
+echo "安装Composer..."
+curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer
+check_command "Composer安装"
+
+# 创建网站目录
+echo "创建网站目录..."
+mkdir -p /www/wwwroot/$DOMAIN
+cd /www/wwwroot/$DOMAIN
+
+# 下载SSPanel
+echo "下载SSPanel..."
+wget https://github.com/Anankke/SSPanel-UIM/archive/refs/tags/$PANEL_VERSION.zip -O sspanel.zip
+check_command "SSPanel下载"
+
+unzip sspanel.zip
+mv SSPanel-UIM-$PANEL_VERSION/* .
+mv SSPanel-UIM-$PANEL_VERSION/.* . 2>/dev/null || true
+rm -rf SSPanel-UIM-$PANEL_VERSION sspanel.zip
+
+# 验证下载
+if [ ! -f "version.md" ]; then
+    echo "错误: SSPanel下载可能失败，请检查版本号"
+    exit 1
+fi
+
+# 安装PHP依赖
+echo "安装PHP依赖..."
+composer install --no-dev --optimize-autoloader --ignore-platform-reqs
+check_command "Composer依赖安装"
+
+# 配置PHP
+echo "配置PHP..."
+sed -i 's/^;cgi.fix_pathinfo=1/cgi.fix_pathinfo=0/' /etc/php/8.2/fpm/php.ini
+sed -i 's/^max_execution_time = .*/max_execution_time = 300/' /etc/php/8.2/fpm/php.ini
+sed -i 's/^memory_limit = .*/memory_limit = 512M/' /etc/php/8.2/fpm/php.ini
+sed -i 's/^upload_max_filesize = .*/upload_max_filesize = 100M/' /etc/php/8.2/fpm/php.ini
+sed -i 's/^post_max_size = .*/post_max_size = 100M/' /etc/php/8.2/fpm/php.ini
+
+systemctl restart php8.2-fpm
+check_command "PHP配置"
+
+# 创建环境配置文件
+cp config/.config.example.php config/.config.php
+cp config/appprofile.example.php config/appprofile.php
+
+# 配置环境文件
+echo "配置环境文件..."
+sed -i "s|'ChangeMe'|'$APP_KEY'|g" config/.config.php
+sed -i "s|'ChangeMe'|'$MU_KEY'|g" config/.config.php
+sed -i "s|https://example.com|https://$DOMAIN|g" config/.config.php
+sed -i "s|db_database.*=.*'sspanel'|db_database = '$DB_NAME'|g" config/.config.php
+sed -i "s|db_username.*=.*'root'|db_username = '$DB_USER'|g" config/.config.php
+sed -i "s|db_password.*=.*'sspanel'|db_password = '$DB_PASSWORD'|g" config/.config.php
+sed -i "s|redis_host.*=.*'127.0.0.1'|redis_host = 'localhost'|g" config/.config.php
+
+# 设置文件权限
+echo "设置文件权限..."
+chown -R www-data:www-data /www/wwwroot/$DOMAIN
+find /www/wwwroot/$DOMAIN -type d -exec chmod 755 {} \;
+find /www/wwwroot/$DOMAIN -type f -exec chmod 644 {} \;
+
+# 设置需要写权限的目录
+chmod -R 777 /www/wwwroot/$DOMAIN/storage
+chmod 775 /www/wwwroot/$DOMAIN/public/clients
+
+# 确保 storage 子目录存在且可写
+mkdir -p /www/wwwroot/$DOMAIN/storage/framework/smarty/{cache,compile}
+mkdir -p /www/wwwroot/$DOMAIN/storage/framework/twig/cache
+chmod -R 777 /www/wwwroot/$DOMAIN/storage/framework
+
+# 配置文件权限
+chmod 664 /www/wwwroot/$DOMAIN/config/.config.php
+chmod 664 /www/wwwroot/$DOMAIN/config/appprofile.php
+
+# 配置Nginx
+echo "配置Nginx..."
+cat > /etc/nginx/sites-available/$DOMAIN <<EOF
+server {
+    listen 80;
+    server_name $DOMAIN www.$DOMAIN;
+    root /www/wwwroot/$DOMAIN/public;
+    index index.php index.html;
+
+    location / {
+        try_files \$uri \$uri/ /index.php?\$query_string;
+    }
+
+    location ~ \.php\$ {
+        include snippets/fastcgi-php.conf;
+        fastcgi_pass unix:/var/run/php/php8.2-fpm.sock;
+        fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
+        include fastcgi_params;
+    }
+
+    location ~ /\.(?!well-known).* {
+        deny all;
+    }
+    
+    # 静态资源缓存
+    location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg)$ {
+        expires 1y;
+        add_header Cache-Control "public, immutable";
+        add_header Access-Control-Allow-Origin "*";
+    }
+}
+EOF
+
+ln -sf /etc/nginx/sites-available/$DOMAIN /etc/nginx/sites-enabled/
+rm -f /etc/nginx/sites-enabled/default
+
+# 测试Nginx配置
+nginx -t
+check_command "Nginx配置测试"
+
+systemctl reload nginx
+check_command "Nginx重载"
+
+# 获取SSL证书
+echo "获取SSL证书..."
+certbot --nginx -d $DOMAIN -d www.$DOMAIN --non-interactive --agree-tos -m admin@$DOMAIN || echo "SSL证书获取失败，请手动获取"
+
+# 更新Nginx配置为HTTPS
+cat > /etc/nginx/sites-available/$DOMAIN <<EOF
+server {
+    listen 80;
+    server_name $DOMAIN www.$DOMAIN;
+    return 301 https://\$server_name\$request_uri;
+}
+
+server {
+    listen 443 ssl http2;
+    server_name $DOMAIN www.$DOMAIN;
+    
+    ssl_certificate /etc/letsencrypt/live/$DOMAIN/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/$DOMAIN/privkey.pem;
+    
+    root /www/wwwroot/$DOMAIN/public;
+    index index.php index.html;
+
+    location / {
+        try_files \$uri \$uri/ /index.php?\$query_string;
+    }
+
+    location ~ \.php\$ {
+        include snippets/fastcgi-php.conf;
+        fastcgi_pass unix:/var/run/php/php8.2-fpm.sock;
+        fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
+        include fastcgi_params;
+    }
+
+    location ~ /\.(?!well-known).* {
+        deny all;
+    }
+    
+    # 静态资源缓存
+    location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg)$ {
+        expires 1y;
+        add_header Cache-Control "public, immutable";
+        add_header Access-Control-Allow-Origin "*";
+    }
+    
+    # 安全头
+    add_header X-Frame-Options "SAMEORIGIN" always;
+    add_header X-XSS-Protection "1; mode=block" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header Referrer-Policy "no-referrer-when-downgrade" always;
+}
+EOF
+
+# 重新加载Nginx
+nginx -t
+systemctl reload nginx
+
+# 设置定时任务
+echo "设置定时任务..."
+(crontab -u www-data -l 2>/dev/null; echo "* * * * * php /www/wwwroot/$DOMAIN/xcat Job CheckJob") | crontab -u www-data -
+(crontab -u www-data -l 2>/dev/null; echo "0 * * * * php /www/wwwroot/$DOMAIN/xcat Job UserJob") | crontab -u www-data -
+(crontab -u www-data -l 2>/dev/null; echo "0 0 * * * php /www/wwwroot/$DOMAIN/xcat Job DailyJob") | crontab -u www-data -
+
+echo "=========================================="
+echo "SSPanel 安装完成！"
+echo "=========================================="
+
+# 输出重要信息
+echo "================= 重要信息 ================="
+echo "网站地址: https://$DOMAIN"
+echo "MySQL root 密码: $MYSQL_ROOT_PASSWORD"
+echo "SSPanel 数据库名: $DB_NAME"
+echo "SSPanel 数据库用户: $DB_USER"
+echo "SSPanel 数据库密码: $DB_PASSWORD"
+echo "应用密钥: $APP_KEY"
+echo "WebAPI 密钥: $MU_KEY"
+echo "网站根目录: /www/wwwroot/$DOMAIN"
+echo "=========================================="
+
+echo ""
+echo "后续步骤："
+echo "1. 运行数据库迁移："
+echo "   cd /www/wwwroot/$DOMAIN && php xcat Migration latest"
+echo "2. 创建管理员账户："
+echo "   cd /www/wwwroot/$DOMAIN && php xcat User createAdmin"
+echo "3. 导入默认设置："
+echo "   cd /www/wwwroot/$DOMAIN && php xcat ImportSettings config/settings.sql"
+echo "4. 访问: https://$DOMAIN"
+echo ""
+echo "如果SSL证书获取失败，请手动运行："
+echo "   certbot --nginx -d $DOMAIN -d www.$DOMAIN"
+echo "=========================================="
+
+# 创建安装信息备份
+cat > /www/wwwroot/$DOMAIN/install_info.txt <<EOF
+安装时间: $(date)
+域名: $DOMAIN
+MySQL root 密码: $MYSQL_ROOT_PASSWORD
+数据库名: $DB_NAME
+数据库用户: $DB_USER
+数据库密码: $DB_PASSWORD
+应用密钥: $APP_KEY
+WebAPI 密钥: $MU_KEY
+EOF
+
+chmod 600 /www/wwwroot/$DOMAIN/install_info.txt
+
+echo "安装信息已保存到: /www/wwwroot/$DOMAIN/install_info.txt"
+echo "请妥善保管这些信息！"
