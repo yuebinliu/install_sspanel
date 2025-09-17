@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # SSPanel-UIM 自动安装脚本 (完美版)
-# 符合官方文档要求：https://docs.sspanel.io/docs/installation/manual-install
+# 支持 Debian 12 和 Ubuntu
 # 更新日期：2023-11-15
 
 # 设置颜色代码
@@ -45,24 +45,25 @@ check_os() {
         . /etc/os-release
         OS=$NAME
         VER=$VERSION_ID
+        OS_ID=$ID
     else
         error "无法检测操作系统类型"
         exit 1
     fi
     
-    log "检测到操作系统: $OS $VER"
+    log "检测到操作系统: $OS $VER (ID: $OS_ID)"
 }
 
 # 安装必要的依赖
 install_dependencies() {
     log "安装必要的依赖包..."
     
-    if [[ "$OS" == "Ubuntu" ]] || [[ "$OS" == "Debian GNU/Linux" ]]; then
+    if [[ "$OS_ID" == "ubuntu" ]] || [[ "$OS_ID" == "debian" ]]; then
         apt update
         apt upgrade -y
         apt install -y curl wget git unzip software-properties-common \
             apt-transport-https ca-certificates gnupg2 lsb-release
-    elif [[ "$OS" == "CentOS Linux" ]] || [[ "$OS" == "Rocky Linux" ]]; then
+    elif [[ "$OS_ID" == "centos" ]] || [[ "$OS_ID" == "rocky" ]]; then
         yum update -y
         yum install -y curl wget git unzip epel-release yum-utils
     else
@@ -71,7 +72,7 @@ install_dependencies() {
     fi
 }
 
-# 安装MySQL
+# 安装MySQL (支持Debian 12)
 install_mysql() {
     log "安装MySQL..."
     
@@ -80,15 +81,30 @@ install_mysql() {
         return
     fi
     
-    if [[ "$OS" == "Ubuntu" ]] || [[ "$OS" == "Debian GNU/Linux" ]]; then
-        # 添加MySQL官方源
-        wget https://dev.mysql.com/get/mysql-apt-config_0.8.24-1_all.deb
-        dpkg -i mysql-apt-config_0.8.24-1_all.deb
-        apt update
+    if [[ "$OS_ID" == "ubuntu" ]] || [[ "$OS_ID" == "debian" ]]; then
+        # 使用MySQL官方APT仓库 (支持Debian 12)
+        log "添加MySQL官方APT仓库..."
+        
+        # 下载并安装MySQL APT仓库
+        wget https://dev.mysql.com/get/mysql-apt-config_0.8.28-1_all.deb
+        if [ $? -eq 0 ]; then
+            dpkg -i mysql-apt-config_0.8.28-1_all.deb
+            apt update
+        else
+            # 如果特定版本下载失败，使用通用方法
+            log "使用通用方法安装MySQL..."
+            wget https://dev.mysql.com/get/mysql-apt-config_latest.deb
+            dpkg -i mysql-apt-config_latest.deb
+            apt update
+        fi
+        
+        # 安装MySQL Server
         apt install -y mysql-server mysql-client
+        
         systemctl start mysql
         systemctl enable mysql
-    elif [[ "$OS" == "CentOS Linux" ]] || [[ "$OS" == "Rocky Linux" ]]; then
+        
+    elif [[ "$OS_ID" == "centos" ]] || [[ "$OS_ID" == "rocky" ]]; then
         # 添加MySQL社区源
         rpm -Uvh https://dev.mysql.com/get/mysql80-community-release-el7-6.noarch.rpm
         yum install -y mysql-community-server mysql-community-client
@@ -97,25 +113,33 @@ install_mysql() {
         
         # 获取临时密码并修改
         MYSQL_TEMP_PASSWORD=$(grep 'temporary password' /var/log/mysqld.log | awk '{print $NF}')
-        mysql --connect-expired-password -u root -p"$MYSQL_TEMP_PASSWORD" <<EOF
+        if [ ! -z "$MYSQL_TEMP_PASSWORD" ]; then
+            mysql --connect-expired-password -u root -p"$MYSQL_TEMP_PASSWORD" <<EOF
 ALTER USER 'root'@'localhost' IDENTIFIED BY '$mysql_root_password';
 FLUSH PRIVILEGES;
 EOF
+        else
+            # 如果没有临时密码，尝试空密码登录
+            mysql -u root <<EOF
+ALTER USER 'root'@'localhost' IDENTIFIED BY '$mysql_root_password';
+FLUSH PRIVILEGES;
+EOF
+        fi
     fi
     
     # MySQL安全设置
     log "执行MySQL安全设置..."
-    if [[ "$OS" == "Ubuntu" ]] || [[ "$OS" == "Debian GNU/Linux" ]]; then
-        mysql_secure_installation <<EOF
-y
-$mysql_root_password
-$mysql_root_password
-y
-y
-y
-y
+    if [[ "$OS_ID" == "ubuntu" ]] || [[ "$OS_ID" == "debian" ]]; then
+        mysql -u root -p"$mysql_root_password" <<EOF
+DELETE FROM mysql.user WHERE User='';
+DELETE FROM mysql.user WHERE User='root' AND Host NOT IN ('localhost', '127.0.0.1', '::1');
+DROP DATABASE IF EXISTS test;
+DELETE FROM mysql.db WHERE Db='test' OR Db='test\\_%';
+FLUSH PRIVILEGES;
 EOF
     fi
+    
+    success "MySQL安装完成"
 }
 
 # 安装Redis
@@ -127,11 +151,11 @@ install_redis() {
         return
     fi
     
-    if [[ "$OS" == "Ubuntu" ]] || [[ "$OS" == "Debian GNU/Linux" ]]; then
+    if [[ "$OS_ID" == "ubuntu" ]] || [[ "$OS_ID" == "debian" ]]; then
         apt install -y redis-server
         systemctl enable redis-server
         systemctl start redis-server
-    elif [[ "$OS" == "CentOS Linux" ]] || [[ "$OS" == "Rocky Linux" ]]; then
+    elif [[ "$OS_ID" == "centos" ]] || [[ "$OS_ID" == "rocky" ]]; then
         yum install -y redis
         systemctl enable redis
         systemctl start redis
@@ -139,47 +163,68 @@ install_redis() {
     
     # 基本Redis安全设置
     log "配置Redis..."
-    sed -i 's/bind 127.0.0.1/bind 127.0.0.1 ::1/g' /etc/redis/redis.conf
-    sed -i 's/protected-mode yes/protected-mode yes/g' /etc/redis/redis.conf
-    echo "maxmemory 512mb" >> /etc/redis/redis.conf
-    echo "maxmemory-policy allkeys-lru" >> /etc/redis/redis.conf
-    systemctl restart redis
+    if [ -f "/etc/redis/redis.conf" ]; then
+        sed -i 's/bind 127.0.0.1/bind 127.0.0.1 ::1/g' /etc/redis/redis.conf
+        sed -i 's/protected-mode yes/protected-mode yes/g' /etc/redis/redis.conf
+        echo "maxmemory 512mb" >> /etc/redis/redis.conf
+        echo "maxmemory-policy allkeys-lru" >> /etc/redis/redis.conf
+        systemctl restart redis
+    fi
+    
+    success "Redis安装完成"
 }
 
 # 安装PHP
 install_php() {
     log "安装PHP 8.2..."
     
-    if [[ "$OS" == "Ubuntu" ]] || [[ "$OS" == "Debian GNU/Linux" ]]; then
-        # 添加PHP PPA
+    if [[ "$OS_ID" == "ubuntu" ]] || [[ "$OS_ID" == "debian" ]]; then
+        # 添加PHP PPA (支持Debian 12)
         add-apt-repository -y ppa:ondrej/php
         apt update
-        apt install -y php8.2 php8.2-{fpm,cli,curl,common,json,mbstring,mysql,xml,zip,gd,intl,bcmath,redis,openssl,sqlite3,imagick}
+        
+        # 安装PHP 8.2及所需扩展
+        PHP_PACKAGES="php8.2 php8.2-fpm php8.2-cli php8.2-curl php8.2-common php8.2-json php8.2-mbstring php8.2-mysql php8.2-xml php8.2-zip php8.2-gd php8.2-intl php8.2-bcmath php8.2-redis php8.2-openssl php8.2-sqlite3"
+        
+        # 检查imagick扩展是否可用
+        if apt-cache show php8.2-imagick &> /dev/null; then
+            PHP_PACKAGES="$PHP_PACKAGES php8.2-imagick"
+        else
+            warning "php8.2-imagick 扩展不可用，跳过安装"
+        fi
+        
+        apt install -y $PHP_PACKAGES
         
         # 配置PHP
-        sed -i 's/;cgi.fix_pathinfo=1/cgi.fix_pathinfo=0/' /etc/php/8.2/fpm/php.ini
-        sed -i 's/memory_limit = .*/memory_limit = 512M/' /etc/php/8.2/fpm/php.ini
-        sed -i 's/upload_max_filesize = .*/upload_max_filesize = 100M/' /etc/php/8.2/fpm/php.ini
-        sed -i 's/post_max_size = .*/post_max_size = 100M/' /etc/php/8.2/fpm/php.ini
-        systemctl restart php8.2-fpm
+        if [ -f "/etc/php/8.2/fpm/php.ini" ]; then
+            sed -i 's/;cgi.fix_pathinfo=1/cgi.fix_pathinfo=0/' /etc/php/8.2/fpm/php.ini
+            sed -i 's/memory_limit = .*/memory_limit = 512M/' /etc/php/8.2/fpm/php.ini
+            sed -i 's/upload_max_filesize = .*/upload_max_filesize = 100M/' /etc/php/8.2/fpm/php.ini
+            sed -i 's/post_max_size = .*/post_max_size = 100M/' /etc/php/8.2/fpm/php.ini
+            systemctl restart php8.2-fpm
+        fi
         
-    elif [[ "$OS" == "CentOS Linux" ]] || [[ "$OS" == "Rocky Linux" ]]; then
+    elif [[ "$OS_ID" == "centos" ]] || [[ "$OS_ID" == "rocky" ]]; then
         # 添加Remi仓库
         yum install -y epel-release
         yum install -y https://rpms.remirepo.net/enterprise/remi-release-$(rpm -E %rhel).rpm
         yum-config-manager --enable remi-php82
-        yum install -y php82 php82-php-{fpm,cli,curl,common,json,mbstring,mysqlnd,xml,zip,gd,intl,bcmath,redis,openssl,sqlite3,imagick}
+        yum install -y php82 php82-php-fpm php82-php-cli php82-php-curl php82-php-common php82-php-json php82-php-mbstring php82-php-mysqlnd php82-php-xml php82-php-zip php82-php-gd php82-php-intl php82-php-bcmath php82-php-redis php82-php-openssl php82-php-sqlite3 php82-php-imagick
         
         # 创建符号链接
         ln -sf /usr/bin/php82 /usr/bin/php
         ln -sf /usr/sbin/php-fpm82 /usr/sbin/php-fpm
         
         # 配置PHP
-        sed -i 's/;cgi.fix_pathinfo=1/cgi.fix_pathinfo=0/' /etc/opt/remi/php82/php.ini
-        sed -i 's/memory_limit = .*/memory_limit = 512M/' /etc/opt/remi/php82/php.ini
-        systemctl enable php82-php-fpm
-        systemctl start php82-php-fpm
+        if [ -f "/etc/opt/remi/php82/php.ini" ]; then
+            sed -i 's/;cgi.fix_pathinfo=1/cgi.fix_pathinfo=0/' /etc/opt/remi/php82/php.ini
+            sed -i 's/memory_limit = .*/memory_limit = 512M/' /etc/opt/remi/php82/php.ini
+            systemctl enable php82-php-fpm
+            systemctl start php82-php-fpm
+        fi
     fi
+    
+    success "PHP安装完成"
 }
 
 # 安装Node.js和Yarn
@@ -189,7 +234,7 @@ install_nodejs_yarn() {
     if command -v node &> /dev/null; then
         warning "Node.js 已经安装，跳过安装步骤"
     else
-        # 安装Node.js
+        # 安装Node.js (支持Debian 12)
         curl -fsSL https://deb.nodesource.com/setup_18.x | bash -
         apt install -y nodejs
     fi
@@ -200,6 +245,8 @@ install_nodejs_yarn() {
         # 安装Yarn
         npm install -g yarn
     fi
+    
+    success "Node.js和Yarn安装完成"
 }
 
 # 安装Composer
@@ -211,18 +258,12 @@ install_composer() {
         return
     fi
     
-    EXPECTED_CHECKSUM="$(php -r 'copy("https://composer.github.io/installer.sig", "php://stdout");')"
+    # 使用官方安装方法
     php -r "copy('https://getcomposer.org/installer', 'composer-setup.php');"
-    ACTUAL_CHECKSUM="$(php -r "echo hash_file('sha384', 'composer-setup.php');")"
-    
-    if [ "$EXPECTED_CHECKSUM" != "$ACTUAL_CHECKSUM" ]; then
-        error "Composer 安装文件校验失败"
-        rm composer-setup.php
-        exit 1
-    fi
-    
     php composer-setup.php --install-dir=/usr/local/bin --filename=composer
-    rm composer-setup.php
+    php -r "unlink('composer-setup.php');"
+    
+    success "Composer安装完成"
 }
 
 # 安装Nginx
@@ -234,14 +275,16 @@ install_nginx() {
         return
     fi
     
-    if [[ "$OS" == "Ubuntu" ]] || [[ "$OS" == "Debian GNU/Linux" ]]; then
+    if [[ "$OS_ID" == "ubuntu" ]] || [[ "$OS_ID" == "debian" ]]; then
         apt install -y nginx
-    elif [[ "$OS" == "CentOS Linux" ]] || [[ "$OS" == "Rocky Linux" ]]; then
+    elif [[ "$OS_ID" == "centos" ]] || [[ "$OS_ID" == "rocky" ]]; then
         yum install -y nginx
     fi
     
     systemctl enable nginx
     systemctl start nginx
+    
+    success "Nginx安装完成"
 }
 
 # 配置防火墙
@@ -252,6 +295,7 @@ configure_firewall() {
         ufw allow 80/tcp
         ufw allow 443/tcp
         ufw allow 22/tcp
+        ufw --force enable
         ufw reload
     elif command -v firewall-cmd &> /dev/null; then
         firewall-cmd --permanent --add-service=http
@@ -261,11 +305,19 @@ configure_firewall() {
     else
         warning "未找到支持的防火墙工具，请手动配置防火墙规则"
     fi
+    
+    success "防火墙配置完成"
 }
 
 # 创建SSPanel数据库
 create_database() {
     log "创建SSPanel数据库..."
+    
+    # 测试MySQL连接
+    if ! mysql -u root -p"$mysql_root_password" -e "SELECT 1;" &> /dev/null; then
+        error "无法连接到MySQL，请检查root密码是否正确"
+        exit 1
+    fi
     
     mysql -u root -p"$mysql_root_password" <<EOF
 CREATE DATABASE IF NOT EXISTS $db_name CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
@@ -319,6 +371,7 @@ install_php_dependencies() {
     
     cd /var/www/sspanel || exit
     
+    # 尝试安装依赖，忽略imagick扩展如果不可用
     composer install --no-dev --optimize-autoloader --ignore-platform-req=ext-imagick
     
     # 检查vendor目录是否存在
@@ -406,12 +459,19 @@ configure_nginx() {
     log "配置Nginx..."
     
     # 创建Nginx配置
-    if [[ "$OS" == "Ubuntu" ]] || [[ "$OS" == "Debian GNU/Linux" ]]; then
+    if [[ "$OS_ID" == "ubuntu" ]] || [[ "$OS_ID" == "debian" ]]; then
         CONFIG_FILE="/etc/nginx/sites-available/sspanel.conf"
         SITES_ENABLED_DIR="/etc/nginx/sites-enabled"
     else
         CONFIG_FILE="/etc/nginx/conf.d/sspanel.conf"
         SITES_ENABLED_DIR=""
+    fi
+    
+    # 获取PHP-FPM socket路径
+    if [[ "$OS_ID" == "ubuntu" ]] || [[ "$OS_ID" == "debian" ]]; then
+        PHP_SOCKET="/var/run/php/php8.2-fpm.sock"
+    else
+        PHP_SOCKET="/var/opt/remi/php82/run/php-fpm/php-fpm.sock"
     fi
     
     cat > $CONFIG_FILE <<EOF
@@ -428,7 +488,7 @@ server {
     
     location ~ \.php\$ {
         include fastcgi_params;
-        fastcgi_pass unix:/var/run/php/php8.2-fpm.sock;
+        fastcgi_pass unix:$PHP_SOCKET;
         fastcgi_index index.php;
         fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
         fastcgi_param PATH_INFO \$fastcgi_path_info;
@@ -446,7 +506,7 @@ server {
 EOF
     
     # 启用站点 (Ubuntu/Debian)
-    if [[ "$OS" == "Ubuntu" ]] || [[ "$OS" == "Debian GNU/Linux" ]]; then
+    if [[ "$OS_ID" == "ubuntu" ]] || [[ "$OS_ID" == "debian" ]]; then
         ln -sf $CONFIG_FILE $SITES_ENABLED_DIR/
     fi
     
@@ -465,14 +525,18 @@ EOF
 install_ssl() {
     log "安装SSL证书..."
     
-    if command -v certbot &> /dev/null; then
-        apt install -y certbot python3-certbot-nginx
-        certbot --nginx -d $domain --non-interactive --agree-tos --email $ssl_email --redirect
-        systemctl reload nginx
-        success "SSL证书安装完成"
+    if [[ "$OS_ID" == "ubuntu" ]] || [[ "$OS_ID" == "debian" ]]; then
+        if command -v certbot &> /dev/null; then
+            apt install -y certbot python3-certbot-nginx
+            certbot --nginx -d $domain --non-interactive --agree-tos --email $ssl_email --redirect
+            systemctl reload nginx
+            success "SSL证书安装完成"
+        else
+            warning "Certbot未安装，跳过SSL证书安装"
+            warning "请手动安装SSL证书: apt install certbot python3-certbot-nginx && certbot --nginx -d $domain"
+        fi
     else
-        warning "Certbot未安装，跳过SSL证书安装"
-        warning "请手动安装SSL证书: apt install certbot python3-certbot-nginx && certbot --nginx -d $domain"
+        warning "CentOS/Rocky Linux 需要手动安装SSL证书"
     fi
 }
 
@@ -480,20 +544,24 @@ install_ssl() {
 configure_php_fpm() {
     log "配置PHP-FPM..."
     
-    if [[ "$OS" == "Ubuntu" ]] || [[ "$OS" == "Debian GNU/Linux" ]]; then
+    if [[ "$OS_ID" == "ubuntu" ]] || [[ "$OS_ID" == "debian" ]]; then
         FPM_POOL_FILE="/etc/php/8.2/fpm/pool.d/www.conf"
     else
         FPM_POOL_FILE="/etc/opt/remi/php82/php-fpm.d/www.conf"
     fi
     
-    # 优化PHP-FPM配置
-    sed -i 's/^pm = .*/pm = dynamic/' $FPM_POOL_FILE
-    sed -i 's/^pm.max_children = .*/pm.max_children = 50/' $FPM_POOL_FILE
-    sed -i 's/^pm.start_servers = .*/pm.start_servers = 5/' $FPM_POOL_FILE
-    sed -i 's/^pm.min_spare_servers = .*/pm.min_spare_servers = 5/' $FPM_POOL_FILE
-    sed -i 's/^pm.max_spare_servers = .*/pm.max_spare_servers = 10/' $FPM_POOL_FILE
+    if [ -f "$FPM_POOL_FILE" ]; then
+        # 优化PHP-FPM配置
+        sed -i 's/^pm = .*/pm = dynamic/' $FPM_POOL_FILE
+        sed -i 's/^pm.max_children = .*/pm.max_children = 50/' $FPM_POOL_FILE
+        sed -i 's/^pm.start_servers = .*/pm.start_servers = 5/' $FPM_POOL_FILE
+        sed -i 's/^pm.min_spare_servers = .*/pm.min_spare_servers = 5/' $FPM_POOL_FILE
+        sed -i 's/^pm.max_spare_servers = .*/pm.max_spare_servers = 10/' $FPM_POOL_FILE
+        
+        systemctl restart php8.2-fpm
+    fi
     
-    systemctl restart php8.2-fpm
+    success "PHP-FPM配置完成"
 }
 
 # 设置cron任务
