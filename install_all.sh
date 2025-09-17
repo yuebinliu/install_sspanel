@@ -1,0 +1,602 @@
+#!/bin/bash
+
+# SSPanel-UIM 自动安装脚本 (完美版)
+# 符合官方文档要求：https://docs.sspanel.io/docs/installation/manual-install
+# 更新日期：2023-11-15
+
+# 设置颜色代码
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+BLUE='\033[0;34m'
+RESET='\033[0m'
+
+# 设置面板版本
+PANEL_VERSION="25.1.0"
+
+# 日志函数
+log() {
+    echo -e "${BLUE}[INFO]${RESET} $(date '+%Y-%m-%d %H:%M:%S') - $1"
+}
+
+success() {
+    echo -e "${GREEN}[SUCCESS]${RESET} $(date '+%Y-%m-%d %H:%M:%S') - $1"
+}
+
+warning() {
+    echo -e "${YELLOW}[WARNING]${RESET} $(date '+%Y-%m-%d %H:%M:%S') - $1"
+}
+
+error() {
+    echo -e "${RED}[ERROR]${RESET} $(date '+%Y-%m-%d %H:%M:%S') - $1" >&2
+}
+
+# 检查是否以root用户运行
+check_root() {
+    if [[ $EUID -ne 0 ]]; then
+        error "此脚本必须以root权限运行"
+        exit 1
+    fi
+}
+
+# 检查系统类型
+check_os() {
+    if [ -f /etc/os-release ]; then
+        . /etc/os-release
+        OS=$NAME
+        VER=$VERSION_ID
+    else
+        error "无法检测操作系统类型"
+        exit 1
+    fi
+    
+    log "检测到操作系统: $OS $VER"
+}
+
+# 安装必要的依赖
+install_dependencies() {
+    log "安装必要的依赖包..."
+    
+    if [[ "$OS" == "Ubuntu" ]] || [[ "$OS" == "Debian GNU/Linux" ]]; then
+        apt update
+        apt upgrade -y
+        apt install -y curl wget git unzip software-properties-common \
+            apt-transport-https ca-certificates gnupg2 lsb-release
+    elif [[ "$OS" == "CentOS Linux" ]] || [[ "$OS" == "Rocky Linux" ]]; then
+        yum update -y
+        yum install -y curl wget git unzip epel-release yum-utils
+    else
+        error "不支持的操作系统: $OS"
+        exit 1
+    fi
+}
+
+# 安装MySQL
+install_mysql() {
+    log "安装MySQL..."
+    
+    if command -v mysql &> /dev/null; then
+        warning "MySQL 已经安装，跳过安装步骤"
+        return
+    fi
+    
+    if [[ "$OS" == "Ubuntu" ]] || [[ "$OS" == "Debian GNU/Linux" ]]; then
+        # 添加MySQL官方源
+        wget https://dev.mysql.com/get/mysql-apt-config_0.8.24-1_all.deb
+        dpkg -i mysql-apt-config_0.8.24-1_all.deb
+        apt update
+        apt install -y mysql-server mysql-client
+        systemctl start mysql
+        systemctl enable mysql
+    elif [[ "$OS" == "CentOS Linux" ]] || [[ "$OS" == "Rocky Linux" ]]; then
+        # 添加MySQL社区源
+        rpm -Uvh https://dev.mysql.com/get/mysql80-community-release-el7-6.noarch.rpm
+        yum install -y mysql-community-server mysql-community-client
+        systemctl start mysqld
+        systemctl enable mysqld
+        
+        # 获取临时密码并修改
+        MYSQL_TEMP_PASSWORD=$(grep 'temporary password' /var/log/mysqld.log | awk '{print $NF}')
+        mysql --connect-expired-password -u root -p"$MYSQL_TEMP_PASSWORD" <<EOF
+ALTER USER 'root'@'localhost' IDENTIFIED BY '$mysql_root_password';
+FLUSH PRIVILEGES;
+EOF
+    fi
+    
+    # MySQL安全设置
+    log "执行MySQL安全设置..."
+    if [[ "$OS" == "Ubuntu" ]] || [[ "$OS" == "Debian GNU/Linux" ]]; then
+        mysql_secure_installation <<EOF
+y
+$mysql_root_password
+$mysql_root_password
+y
+y
+y
+y
+EOF
+    fi
+}
+
+# 安装Redis
+install_redis() {
+    log "安装Redis..."
+    
+    if command -v redis-server &> /dev/null; then
+        warning "Redis 已经安装，跳过安装步骤"
+        return
+    fi
+    
+    if [[ "$OS" == "Ubuntu" ]] || [[ "$OS" == "Debian GNU/Linux" ]]; then
+        apt install -y redis-server
+        systemctl enable redis-server
+        systemctl start redis-server
+    elif [[ "$OS" == "CentOS Linux" ]] || [[ "$OS" == "Rocky Linux" ]]; then
+        yum install -y redis
+        systemctl enable redis
+        systemctl start redis
+    fi
+    
+    # 基本Redis安全设置
+    log "配置Redis..."
+    sed -i 's/bind 127.0.0.1/bind 127.0.0.1 ::1/g' /etc/redis/redis.conf
+    sed -i 's/protected-mode yes/protected-mode yes/g' /etc/redis/redis.conf
+    echo "maxmemory 512mb" >> /etc/redis/redis.conf
+    echo "maxmemory-policy allkeys-lru" >> /etc/redis/redis.conf
+    systemctl restart redis
+}
+
+# 安装PHP
+install_php() {
+    log "安装PHP 8.2..."
+    
+    if [[ "$OS" == "Ubuntu" ]] || [[ "$OS" == "Debian GNU/Linux" ]]; then
+        # 添加PHP PPA
+        add-apt-repository -y ppa:ondrej/php
+        apt update
+        apt install -y php8.2 php8.2-{fpm,cli,curl,common,json,mbstring,mysql,xml,zip,gd,intl,bcmath,redis,openssl,sqlite3,imagick}
+        
+        # 配置PHP
+        sed -i 's/;cgi.fix_pathinfo=1/cgi.fix_pathinfo=0/' /etc/php/8.2/fpm/php.ini
+        sed -i 's/memory_limit = .*/memory_limit = 512M/' /etc/php/8.2/fpm/php.ini
+        sed -i 's/upload_max_filesize = .*/upload_max_filesize = 100M/' /etc/php/8.2/fpm/php.ini
+        sed -i 's/post_max_size = .*/post_max_size = 100M/' /etc/php/8.2/fpm/php.ini
+        systemctl restart php8.2-fpm
+        
+    elif [[ "$OS" == "CentOS Linux" ]] || [[ "$OS" == "Rocky Linux" ]]; then
+        # 添加Remi仓库
+        yum install -y epel-release
+        yum install -y https://rpms.remirepo.net/enterprise/remi-release-$(rpm -E %rhel).rpm
+        yum-config-manager --enable remi-php82
+        yum install -y php82 php82-php-{fpm,cli,curl,common,json,mbstring,mysqlnd,xml,zip,gd,intl,bcmath,redis,openssl,sqlite3,imagick}
+        
+        # 创建符号链接
+        ln -sf /usr/bin/php82 /usr/bin/php
+        ln -sf /usr/sbin/php-fpm82 /usr/sbin/php-fpm
+        
+        # 配置PHP
+        sed -i 's/;cgi.fix_pathinfo=1/cgi.fix_pathinfo=0/' /etc/opt/remi/php82/php.ini
+        sed -i 's/memory_limit = .*/memory_limit = 512M/' /etc/opt/remi/php82/php.ini
+        systemctl enable php82-php-fpm
+        systemctl start php82-php-fpm
+    fi
+}
+
+# 安装Node.js和Yarn
+install_nodejs_yarn() {
+    log "安装Node.js和Yarn..."
+    
+    if command -v node &> /dev/null; then
+        warning "Node.js 已经安装，跳过安装步骤"
+    else
+        # 安装Node.js
+        curl -fsSL https://deb.nodesource.com/setup_18.x | bash -
+        apt install -y nodejs
+    fi
+    
+    if command -v yarn &> /dev/null; then
+        warning "Yarn 已经安装，跳过安装步骤"
+    else
+        # 安装Yarn
+        npm install -g yarn
+    fi
+}
+
+# 安装Composer
+install_composer() {
+    log "安装Composer..."
+    
+    if command -v composer &> /dev/null; then
+        warning "Composer 已经安装，跳过安装步骤"
+        return
+    fi
+    
+    EXPECTED_CHECKSUM="$(php -r 'copy("https://composer.github.io/installer.sig", "php://stdout");')"
+    php -r "copy('https://getcomposer.org/installer', 'composer-setup.php');"
+    ACTUAL_CHECKSUM="$(php -r "echo hash_file('sha384', 'composer-setup.php');")"
+    
+    if [ "$EXPECTED_CHECKSUM" != "$ACTUAL_CHECKSUM" ]; then
+        error "Composer 安装文件校验失败"
+        rm composer-setup.php
+        exit 1
+    fi
+    
+    php composer-setup.php --install-dir=/usr/local/bin --filename=composer
+    rm composer-setup.php
+}
+
+# 安装Nginx
+install_nginx() {
+    log "安装Nginx..."
+    
+    if command -v nginx &> /dev/null; then
+        warning "Nginx 已经安装，跳过安装步骤"
+        return
+    fi
+    
+    if [[ "$OS" == "Ubuntu" ]] || [[ "$OS" == "Debian GNU/Linux" ]]; then
+        apt install -y nginx
+    elif [[ "$OS" == "CentOS Linux" ]] || [[ "$OS" == "Rocky Linux" ]]; then
+        yum install -y nginx
+    fi
+    
+    systemctl enable nginx
+    systemctl start nginx
+}
+
+# 配置防火墙
+configure_firewall() {
+    log "配置防火墙..."
+    
+    if command -v ufw &> /dev/null; then
+        ufw allow 80/tcp
+        ufw allow 443/tcp
+        ufw allow 22/tcp
+        ufw reload
+    elif command -v firewall-cmd &> /dev/null; then
+        firewall-cmd --permanent --add-service=http
+        firewall-cmd --permanent --add-service=https
+        firewall-cmd --permanent --add-service=ssh
+        firewall-cmd --reload
+    else
+        warning "未找到支持的防火墙工具，请手动配置防火墙规则"
+    fi
+}
+
+# 创建SSPanel数据库
+create_database() {
+    log "创建SSPanel数据库..."
+    
+    mysql -u root -p"$mysql_root_password" <<EOF
+CREATE DATABASE IF NOT EXISTS $db_name CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+CREATE USER IF NOT EXISTS '$db_user'@'localhost' IDENTIFIED BY '$db_password';
+GRANT ALL PRIVILEGES ON $db_name.* TO '$db_user'@'localhost';
+FLUSH PRIVILEGES;
+EOF
+    
+    # 检查数据库是否创建成功
+    if mysql -u root -p"$mysql_root_password" -e "USE $db_name;" 2>/dev/null; then
+        success "数据库创建成功"
+    else
+        error "数据库创建失败"
+        exit 1
+    fi
+}
+
+# 下载SSPanel文件
+download_sspanel() {
+    log "下载SSPanel v${PANEL_VERSION}..."
+    
+    cd /var/www || exit
+    if [ -d "sspanel" ]; then
+        warning "SSPanel目录已存在，跳过下载"
+        return
+    fi
+    
+    # 方法1: 直接下载发布版压缩包
+    wget https://github.com/Anankke/SSPanel-UIM/archive/refs/tags/${PANEL_VERSION}.zip -O sspanel.zip
+    
+    if [ $? -ne 0 ]; then
+        error "下载SSPanel失败，尝试方法2: git clone"
+        # 方法2: 使用git clone
+        git clone https://github.com/Anankke/SSPanel-Uim.git sspanel
+        cd sspanel
+        git checkout tags/${PANEL_VERSION}
+    else
+        # 解压文件
+        unzip sspanel.zip
+        mv SSPanel-UIM-${PANEL_VERSION} sspanel
+        rm sspanel.zip
+        cd sspanel
+    fi
+    
+    success "SSPanel下载完成"
+}
+
+# 安装PHP依赖
+install_php_dependencies() {
+    log "安装PHP依赖..."
+    
+    cd /var/www/sspanel || exit
+    
+    composer install --no-dev --optimize-autoloader --ignore-platform-req=ext-imagick
+    
+    # 检查vendor目录是否存在
+    if [ ! -f "vendor/autoload.php" ]; then
+        error "vendor/autoload.php 不存在，Composer依赖安装失败"
+        exit 1
+    fi
+    
+    success "PHP依赖安装完成"
+}
+
+# 编译前端资源
+build_frontend() {
+    log "编译前端资源..."
+    
+    cd /var/www/sspanel || exit
+    
+    yarn install
+    yarn run build:production
+    
+    success "前端资源编译完成"
+}
+
+# 配置.config.php文件
+configure_config() {
+    log "配置.config.php文件..."
+    
+    cd /var/www/sspanel || exit
+    
+    # 复制配置文件
+    cp config/.config.example.php config/.config.php
+    
+    # 生成随机密钥
+    RANDOM_KEY=$(openssl rand -hex 16)
+    RANDOM_MUKEY=$(openssl rand -hex 16)
+    
+    # 使用实际配置替换示例值
+    sed -i "s/'key' => 'ChangeMe'/'key' => '$RANDOM_KEY'/" config/.config.php
+    sed -i "s|'baseUrl' => 'https://example.com'|'baseUrl' => 'https://$domain'|" config/.config.php
+    sed -i "s/'muKey' => 'ChangeMe'/'muKey' => '$RANDOM_MUKEY'/" config/.config.php
+    sed -i "s/'db_database' => 'sspanel'/'db_database' => '$db_name'/" config/.config.php
+    sed -i "s/'db_username' => 'root'/'db_username' => '$db_user'/" config/.config.php
+    sed -i "s/'db_password' => 'sspanel'/'db_password' => '$db_password'/" config/.config.php
+    sed -i "s/'redis_host' => '127.0.0.1'/'redis_host' => '127.0.0.1'/" config/.config.php
+    
+    # 设置正确的文件权限
+    chown -R www-data:www-data .
+    find . -type d -exec chmod 755 {} \;
+    find . -type f -exec chmod 644 {} \;
+    chmod -R 755 storage/
+    chmod 660 config/.config.php
+    
+    success ".config.php 配置完成"
+}
+
+# 初始化数据库
+init_database() {
+    log "初始化数据库..."
+    
+    cd /var/www/sspanel || exit
+    
+    # 首先确认 vendor 目录存在
+    if [ ! -f vendor/autoload.php ]; then
+        error "vendor/autoload.php 不存在，请先运行 composer install"
+        composer install --no-dev --optimize-autoloader
+    fi
+    
+    # 执行数据库迁移（初始化全新数据库）
+    php xcat Migration new
+    
+    # 更新到最新数据库版本
+    php xcat Migration latest
+    
+    # 导入配置项
+    php xcat Tool importSetting
+    
+    # 创建管理员账户
+    php xcat Tool createAdmin
+    
+    success "数据库初始化完成"
+}
+
+# 配置Nginx
+configure_nginx() {
+    log "配置Nginx..."
+    
+    # 创建Nginx配置
+    if [[ "$OS" == "Ubuntu" ]] || [[ "$OS" == "Debian GNU/Linux" ]]; then
+        CONFIG_FILE="/etc/nginx/sites-available/sspanel.conf"
+        SITES_ENABLED_DIR="/etc/nginx/sites-enabled"
+    else
+        CONFIG_FILE="/etc/nginx/conf.d/sspanel.conf"
+        SITES_ENABLED_DIR=""
+    fi
+    
+    cat > $CONFIG_FILE <<EOF
+server {
+    listen 80;
+    listen [::]:80;
+    server_name $domain;
+    root /var/www/sspanel/public;
+    index index.php index.html;
+    
+    location / {
+        try_files \$uri \$uri/ /index.php\$is_args\$args;
+    }
+    
+    location ~ \.php\$ {
+        include fastcgi_params;
+        fastcgi_pass unix:/var/run/php/php8.2-fpm.sock;
+        fastcgi_index index.php;
+        fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
+        fastcgi_param PATH_INFO \$fastcgi_path_info;
+    }
+    
+    location ~ /\.(?!well-known).* {
+        deny all;
+    }
+    
+    location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg)\$ {
+        expires 1y;
+        add_header Cache-Control "public, immutable";
+    }
+}
+EOF
+    
+    # 启用站点 (Ubuntu/Debian)
+    if [[ "$OS" == "Ubuntu" ]] || [[ "$OS" == "Debian GNU/Linux" ]]; then
+        ln -sf $CONFIG_FILE $SITES_ENABLED_DIR/
+    fi
+    
+    # 测试Nginx配置
+    nginx -t
+    if [ $? -eq 0 ]; then
+        systemctl reload nginx
+        success "Nginx配置完成并重载"
+    else
+        error "Nginx配置测试失败，请检查配置"
+        exit 1
+    fi
+}
+
+# 安装SSL证书 (可选)
+install_ssl() {
+    log "安装SSL证书..."
+    
+    if command -v certbot &> /dev/null; then
+        apt install -y certbot python3-certbot-nginx
+        certbot --nginx -d $domain --non-interactive --agree-tos --email $ssl_email --redirect
+        systemctl reload nginx
+        success "SSL证书安装完成"
+    else
+        warning "Certbot未安装，跳过SSL证书安装"
+        warning "请手动安装SSL证书: apt install certbot python3-certbot-nginx && certbot --nginx -d $domain"
+    fi
+}
+
+# 配置PHP-FPM
+configure_php_fpm() {
+    log "配置PHP-FPM..."
+    
+    if [[ "$OS" == "Ubuntu" ]] || [[ "$OS" == "Debian GNU/Linux" ]]; then
+        FPM_POOL_FILE="/etc/php/8.2/fpm/pool.d/www.conf"
+    else
+        FPM_POOL_FILE="/etc/opt/remi/php82/php-fpm.d/www.conf"
+    fi
+    
+    # 优化PHP-FPM配置
+    sed -i 's/^pm = .*/pm = dynamic/' $FPM_POOL_FILE
+    sed -i 's/^pm.max_children = .*/pm.max_children = 50/' $FPM_POOL_FILE
+    sed -i 's/^pm.start_servers = .*/pm.start_servers = 5/' $FPM_POOL_FILE
+    sed -i 's/^pm.min_spare_servers = .*/pm.min_spare_servers = 5/' $FPM_POOL_FILE
+    sed -i 's/^pm.max_spare_servers = .*/pm.max_spare_servers = 10/' $FPM_POOL_FILE
+    
+    systemctl restart php8.2-fpm
+}
+
+# 设置cron任务
+setup_cron() {
+    log "设置cron任务..."
+    
+    (crontab -l 2>/dev/null; echo "* * * * * php /var/www/sspanel/xcat Job CheckJob") | crontab -
+    (crontab -l 2>/dev/null; echo "0 */1 * * * php /var/www/sspanel/xcat Job UserJob") | crontab -
+    (crontab -l 2>/dev/null; echo "0 0 * * * php /var/www/sspanel/xcat Job DailyJob") | crontab -
+    (crontab -l 2>/dev/null; echo "*/5 * * * * php /var/www/sspanel/xcat Job CheckIn") | crontab -
+    (crontab -l 2>/dev/null; echo "0 */1 * * * php /var/www/sspanel/xcat Job SendDiaryMail") | crontab -
+    
+    success "cron任务设置完成"
+}
+
+# 获取用户输入
+get_user_input() {
+    echo "请输入MySQL root密码:"
+    read -s mysql_root_password
+    echo "请再次输入MySQL root密码:"
+    read -s mysql_root_password_confirm
+    
+    if [ "$mysql_root_password" != "$mysql_root_password_confirm" ]; then
+        error "两次输入的密码不匹配"
+        exit 1
+    fi
+    
+    echo "请输入SSPanel数据库名称:"
+    read db_name
+    echo "请输入SSPanel数据库用户名:"
+    read db_user
+    echo "请输入SSPanel数据库密码:"
+    read -s db_password
+    echo "请再次输入SSPanel数据库密码:"
+    read -s db_password_confirm
+    
+    if [ "$db_password" != "$db_password_confirm" ]; then
+        error "两次输入的密码不匹配"
+        exit 1
+    fi
+    
+    echo "请输入您的域名:"
+    read domain
+    
+    echo "请输入SSL证书邮箱 (用于Certbot):"
+    read ssl_email
+}
+
+# 显示安装摘要
+show_summary() {
+    echo ""
+    success "SSPanel 安装完成!"
+    echo "============================================================"
+    echo "数据库名称: $db_name"
+    echo "数据库用户: $db_user"
+    echo "域名: $domain"
+    echo "网站根目录: /var/www/sspanel"
+    echo "面板版本: $PANEL_VERSION"
+    echo "============================================================"
+    echo "接下来您需要:"
+    echo "1. 通过浏览器访问 https://$domain 完成安装"
+    echo "2. 检查配置文件: /var/www/sspanel/config/.config.php"
+    echo "3. 设置备份策略和监控"
+    echo "============================================================"
+}
+
+# 主函数
+main() {
+    echo "SSPanel-UIM 自动安装脚本 v${PANEL_VERSION}"
+    echo "============================================================"
+    
+    check_root
+    check_os
+    get_user_input
+    install_dependencies
+    install_mysql
+    install_redis
+    install_php
+    install_nodejs_yarn
+    install_composer
+    install_nginx
+    configure_firewall
+    
+    # 创建数据库
+    create_database
+    
+    # 下载和设置SSPanel
+    download_sspanel
+    install_php_dependencies
+    build_frontend
+    configure_config
+    
+    # 初始化数据库
+    init_database
+    
+    # 配置服务器
+    configure_nginx
+    configure_php_fpm
+    install_ssl
+    setup_cron
+    
+    show_summary
+}
+
+# 执行主函数
+main "$@"
