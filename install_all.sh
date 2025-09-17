@@ -61,8 +61,11 @@ install_dependencies() {
     if [[ "$OS_ID" == "ubuntu" ]] || [[ "$OS_ID" == "debian" ]]; then
         apt update
         apt upgrade -y
+        # 更新CA证书
+        apt install -y ca-certificates
+        update-ca-certificates
         apt install -y curl wget git unzip software-properties-common \
-            apt-transport-https ca-certificates gnupg2 lsb-release
+            apt-transport-https gnupg2 lsb-release
     elif [[ "$OS_ID" == "centos" ]] || [[ "$OS_ID" == "rocky" ]]; then
         yum update -y
         yum install -y curl wget git unzip epel-release yum-utils
@@ -144,8 +147,28 @@ install_php() {
         add-apt-repository -y ppa:ondrej/php
         apt update
         
-        # 安装PHP 8.2及所需扩展
-        PHP_PACKAGES="php8.2 php8.2-fpm php8.2-cli php8.2-curl php8.2-common php8.2-json php8.2-mbstring php8.2-mysql php8.2-xml php8.2-zip php8.2-gd php8.2-intl php8.2-bcmath php8.2-redis php8.2-openssl php8.2-sqlite3"
+        # 安装PHP 8.2 FPM和基础包
+        apt install -y php8.2 php8.2-fpm php8.2-cli
+        
+        # 安装必需的扩展（修正包名）
+        PHP_PACKAGES="php8.2-curl php8.2-common php8.2-mbstring php8.2-mysql php8.2-xml php8.2-zip php8.2-gd php8.2-intl php8.2-bcmath php8.2-redis"
+        
+        # 在Debian 12中，openssl和sqlite3扩展通常已包含在基础包中
+        # 如果单独存在则安装
+        if apt-cache show php8.2-openssl &> /dev/null; then
+            PHP_PACKAGES="$PHP_PACKAGES php8.2-openssl"
+        else
+            warning "php8.2-openssl 扩展不可用或已包含在基础包中"
+        fi
+        
+        if apt-cache show php8.2-sqlite3 &> /dev/null; then
+            PHP_PACKAGES="$PHP_PACKAGES php8.2-sqlite3"
+        else
+            warning "php8.2-sqlite3 扩展不可用或已包含在基础包中"
+        fi
+        
+        # json扩展在Debian 12中已包含在php8.2-common中
+        warning "php8.2-json 已包含在php8.2-common中，跳过单独安装"
         
         # 检查imagick扩展是否可用
         if apt-cache show php8.2-imagick &> /dev/null; then
@@ -162,15 +185,25 @@ install_php() {
             sed -i 's/memory_limit = .*/memory_limit = 512M/' /etc/php/8.2/fpm/php.ini
             sed -i 's/upload_max_filesize = .*/upload_max_filesize = 100M/' /etc/php/8.2/fpm/php.ini
             sed -i 's/post_max_size = .*/post_max_size = 100M/' /etc/php/8.2/fpm/php.ini
+            sed -i 's/max_execution_time = .*/max_execution_time = 300/' /etc/php/8.2/fpm/php.ini
+            
+            # 启用必要的扩展（如果尚未启用）
+            if [ -f "/etc/php/8.2/mods-available/openssl.ini" ]; then
+                phpenmod openssl
+            fi
+            if [ -f "/etc/php/8.2/mods-available/json.ini" ]; then
+                phpenmod json
+            fi
+            
             systemctl restart php8.2-fpm
         fi
         
     elif [[ "$OS_ID" == "centos" ]] || [[ "$OS_ID" == "rocky" ]]; then
-        # 添加Remi仓库
+        # CentOS/Rocky Linux 安装（保持不变）
         yum install -y epel-release
         yum install -y https://rpms.remirepo.net/enterprise/remi-release-$(rpm -E %rhel).rpm
         yum-config-manager --enable remi-php82
-        yum install -y php82 php82-php-fpm php82-php-cli php82-php-curl php82-php-common php82-php-json php82-php-mbstring php82-php-mysqlnd php82-php-xml php82-php-zip php82-php-gd php82-php-intl php82-php-bcmath php82-php-redis php82-php-openssl php82-php-sqlite3 php82-php-imagick
+        yum install -y php82 php82-php-fpm php82-php-cli php82-php-curl php82-php-common php82-php-json php82-php-mbstring php82-php-mysqlnd php82-php-xml php82-php-zip php82-php-gd php82-php-intl php82-php-bcmath php82-php-redis php82-php-openssl php82-php-sqlite3
         
         # 创建符号链接
         ln -sf /usr/bin/php82 /usr/bin/php
@@ -185,11 +218,16 @@ install_php() {
         fi
     fi
     
-    # 验证PHP安装
+    # 验证PHP安装和扩展
+    log "验证PHP安装..."
     if ! command -v php &> /dev/null; then
         error "PHP安装失败，php命令未找到"
         exit 1
     fi
+    
+    # 检查必需的扩展
+    log "检查PHP扩展..."
+    php -m | grep -E "(curl|mbstring|mysqlnd|xml|json|gd|bcmath|openssl)"
     
     success "PHP安装完成"
 }
