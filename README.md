@@ -6,6 +6,10 @@
 wget https://raw.githubusercontent.com/yuebinliu/install_sspanel/refs/heads/main/install_sspanel.sh
 nano install_sspanel.sh
 chmod +x install_sspanel.sh
+
+wget https://github.com/yuebinliu/install_sspanel/raw/refs/heads/main/install_all.sh
+chmod +x install_all.sh
+./install_all.sh
 ```
 
 2. **运行脚本**：
