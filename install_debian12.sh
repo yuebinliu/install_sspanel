@@ -218,10 +218,10 @@ echo "配置环境文件..."
 sed -i "s|'ChangeMe'|'$APP_KEY'|g" config/.config.php
 sed -i "s|'ChangeMe'|'$MU_KEY'|g" config/.config.php
 sed -i "s|https://example.com|https://$DOMAIN|g" config/.config.php
-sed -i "s|db_database.*=.*'sspanel'|db_database = '$DB_NAME'|g" config/.config.php
-sed -i "s|db_username.*=.*'root'|db_username = '$DB_USER'|g" config/.config.php
-sed -i "s|db_password.*=.*'sspanel'|db_password = '$DB_PASSWORD'|g" config/.config.php
-sed -i "s|redis_host.*=.*'127.0.0.1'|redis_host = 'localhost'|g" config/.config.php
+sed -i "s|$_ENV\['db_host'\] = '127.0.0.1';|$_ENV['db_host'] = 'localhost';|g" config/.config.php
+sed -i "s|$_ENV\['db_database'\] = 'sspanel';|$_ENV['db_database'] = '$DB_NAME';|g" config/.config.php
+sed -i "s|$_ENV\['db_username'\] = 'sspanel';|$_ENV['db_username'] = '$DB_USER';|g" config/.config.php
+sed -i "s|$_ENV\['db_password'\] = 'password';|$_ENV['db_password'] = '$DB_PASSWORD';|g" config/.config.php
 
 # 设置文件权限
 echo "设置文件权限..."
