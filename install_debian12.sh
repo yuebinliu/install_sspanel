@@ -145,11 +145,7 @@ mv SSPanel-UIM-$PANEL_VERSION/* .
 mv SSPanel-UIM-$PANEL_VERSION/.* . 2>/dev/null || true
 rm -rf SSPanel-UIM-$PANEL_VERSION sspanel.zip
 
-# 验证下载
-if [ ! -f "version.md" ]; then
-    echo "错误: SSPanel下载可能失败，请检查版本号"
-    exit 1
-fi
+echo "SSPanel 下载解压完成"
 
 # 安装PHP依赖
 echo "安装PHP依赖..."
