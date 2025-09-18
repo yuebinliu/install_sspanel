@@ -73,29 +73,19 @@ echo "更新系统包..."
 apt update && apt upgrade -y
 check_command "系统更新"
 
-# 添加必要的官方仓库
-echo "添加官方仓库..."
-# 添加 Nginx 官方仓库
-curl https://nginx.org/keys/nginx_signing.key | gpg --dearmor \
-  | tee /usr/share/keyrings/nginx-archive-keyring.gpg >/dev/null
-echo "deb [signed-by=/usr/share/keyrings/nginx-archive-keyring.gpg] \
-  http://nginx.org/packages/mainline/debian bookworm nginx" \
-  | tee /etc/apt/sources.list.d/nginx.list
-echo -e "Package: *\nPin: origin nginx.org\nPin: release o=nginx\nPin-Priority: 900\n" \
-  | tee /etc/apt/preferences.d/99nginx
-
-# 添加 PHP 8.4 仓库（按官方推荐）
+# 添加 PHP 8.4 官方仓库（按官方推荐）
+echo "添加 PHP 8.4 仓库..."
 curl -sSLo /tmp/php.gpg https://packages.sury.org/php/apt.gpg
 gpg --dearmor < /tmp/php.gpg > /usr/share/keyrings/php-archive-keyring.gpg
 echo "deb [signed-by=/usr/share/keyrings/php-archive-keyring.gpg] \
   https://packages.sury.org/php/ bookworm main" > /etc/apt/sources.list.d/php.list
 
 apt update
-check_command "仓库添加"
+check_command "PHP 仓库添加"
 
 # 安装必要软件
 echo "安装必要软件..."
-# 按照官方手册要求安装 PHP 8.4 及所有必需扩展
+# 使用 Debian 默认 Nginx + PHP 8.4 组合，简单稳定
 apt install -y nginx mariadb-server redis-server certbot python3-certbot-nginx \
   php8.4-{bcmath,bz2,cli,common,curl,fpm,gd,gmp,igbinary,intl,mbstring,mysql,opcache,readline,redis,soap,xml,yaml,zip}
 check_command "软件安装"
