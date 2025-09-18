@@ -86,7 +86,7 @@ check_command "PHP 仓库添加"
 # 安装必要软件
 echo "安装必要软件..."
 # 使用 Debian 默认 Nginx + PHP 8.4 组合，简单稳定
-apt install -y nginx mariadb-server redis-server certbot python3-certbot-nginx \
+apt install -y nginx mariadb-server redis-server ufw certbot python3-certbot-nginx \
   php8.4-{bcmath,bz2,cli,common,curl,fpm,gd,gmp,igbinary,intl,mbstring,mysql,opcache,readline,redis,soap,xml,yaml,zip}
 check_command "软件安装"
 
@@ -147,6 +147,25 @@ echo "配置 Nginx..."
 sed -i 's/^user.*/user www-data;/' /etc/nginx/nginx.conf
 systemctl start nginx && systemctl enable nginx
 check_command "Nginx 配置"
+
+# 配置防火墙（在SSL证书获取之前）
+echo "配置防火墙..."
+# 安装 UFW（如果未安装）
+if ! command -v ufw &> /dev/null; then
+    apt install -y ufw
+    check_command "UFW 安装"
+fi
+
+# 配置防火墙规则
+ufw allow 22/tcp    # SSH 端口，防止被锁定
+ufw allow 80/tcp    # HTTP 端口（Let's Encrypt 域名验证需要）
+ufw allow 443/tcp   # HTTPS 端口
+
+# 启用防火墙
+ufw --force enable
+check_command "防火墙配置"
+
+echo "防火墙配置完成 - 已开放端口: 22(SSH), 80(HTTP), 443(HTTPS)"
 
 # 配置PHP（使用 PHP 8.4）
 echo "配置PHP..."
@@ -332,6 +351,7 @@ echo "Nginx 版本: $(nginx -v 2>&1 | cut -d' ' -f3)"
 echo "MariaDB 版本: $(mysql --version | awk '{print $5}' | sed 's/,//')"
 echo "Redis 版本: $(redis-server --version | awk '{print $3}' | cut -d'=' -f2)"
 echo "SSPanel 版本: $PANEL_VERSION"
+echo "防火墙状态: $(ufw status | head -1)"
 
 # 输出重要信息
 echo "================= 重要信息 ================="
@@ -349,13 +369,15 @@ echo ""
 echo "后续步骤："
 echo "1. 验证 PHP 扩展："
 echo "   php8.4 -m | grep -E '(bcmath|curl|gmp|mbstring|mysqli|opcache|posix|redis|sodium|xml|yaml|zip)'"
-echo "2. 运行数据库迁移："
+echo "2. 检查防火墙状态："
+echo "   ufw status"
+echo "3. 运行数据库迁移："
 echo "   cd /www/wwwroot/$DOMAIN && php xcat Migration latest"
-echo "3. 创建管理员账户："
+echo "4. 创建管理员账户："
 echo "   cd /www/wwwroot/$DOMAIN && php xcat User createAdmin"
-echo "4. 导入默认设置："
+echo "5. 导入默认设置："
 echo "   cd /www/wwwroot/$DOMAIN && php xcat ImportSettings config/settings.sql"
-echo "5. 访问: https://$DOMAIN"
+echo "6. 访问: https://$DOMAIN"
 echo ""
 echo "如果SSL证书获取失败，请手动运行："
 echo "   certbot --nginx -d $DOMAIN -d www.$DOMAIN"
