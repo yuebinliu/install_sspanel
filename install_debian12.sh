@@ -7,6 +7,7 @@ set -e
 
 # 配置变量
 DOMAIN="yuebin.uk"
+SSL_EMAIL="yuebinliu@gmail.com"
 DB_NAME="sspanel"
 DB_USER="sspanel"
 DB_PASSWORD=$(openssl rand -base64 16 | tr -d '/+' | cut -c1-16)
@@ -117,6 +118,7 @@ check_command "数据库创建"
 
 # 安装Composer
 echo "安装Composer..."
+export COMPOSER_ALLOW_SUPERUSER=1
 curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer
 check_command "Composer安装"
 
@@ -175,6 +177,11 @@ sed -i 's/^memory_limit.*/memory_limit = 256M/' /etc/php/8.4/fpm/php.ini
 sed -i 's/^post_max_size.*/post_max_size = 50M/' /etc/php/8.4/fpm/php.ini
 sed -i 's/^upload_max_filesize.*/upload_max_filesize = 50M/' /etc/php/8.4/fpm/php.ini
 sed -i 's/^;date.timezone.*/date.timezone = Asia\/Shanghai/' /etc/php/8.4/fpm/php.ini
+
+# 启用 opcache
+sed -i 's/^;opcache.enable=.*/opcache.enable=1/' /etc/php/8.4/fpm/php.ini
+sed -i 's/^;opcache.memory_consumption=.*/opcache.memory_consumption=128/' /etc/php/8.4/fpm/php.ini
+sed -i 's/^;opcache.max_accelerated_files=.*/opcache.max_accelerated_files=10000/' /etc/php/8.4/fpm/php.ini
 
 # 配置 PHP-FPM
 sed -i 's/^;listen.owner.*/listen.owner = www-data/' /etc/php/8.4/fpm/pool.d/www.conf
@@ -240,7 +247,7 @@ echo "配置Nginx..."
 cat > /etc/nginx/sites-available/$DOMAIN <<EOF
 server {
     listen 80;
-    server_name $DOMAIN www.$DOMAIN;
+    server_name $DOMAIN;
     root /www/wwwroot/$DOMAIN/public;
     index index.php index.html;
 
@@ -280,19 +287,19 @@ check_command "Nginx重载"
 
 # 获取SSL证书
 echo "获取SSL证书..."
-certbot --nginx -d $DOMAIN -d www.$DOMAIN --non-interactive --agree-tos -m admin@$DOMAIN || echo "SSL证书获取失败，请手动获取"
+certbot --nginx -d $DOMAIN --non-interactive --agree-tos -m $SSL_EMAIL || echo "SSL证书获取失败，请手动获取"
 
 # 更新Nginx配置为HTTPS
 cat > /etc/nginx/sites-available/$DOMAIN <<EOF
 server {
     listen 80;
-    server_name $DOMAIN www.$DOMAIN;
+    server_name $DOMAIN;
     return 301 https://\$server_name\$request_uri;
 }
 
 server {
     listen 443 ssl http2;
-    server_name $DOMAIN www.$DOMAIN;
+    server_name $DOMAIN;
     
     ssl_certificate /etc/letsencrypt/live/$DOMAIN/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/$DOMAIN/privkey.pem;
@@ -380,7 +387,7 @@ echo "   cd /www/wwwroot/$DOMAIN && php xcat ImportSettings config/settings.sql"
 echo "6. 访问: https://$DOMAIN"
 echo ""
 echo "如果SSL证书获取失败，请手动运行："
-echo "   certbot --nginx -d $DOMAIN -d www.$DOMAIN"
+echo "   certbot --nginx -d $DOMAIN"
 echo "=========================================="
 
 # 创建安装信息备份
