@@ -33,16 +33,71 @@ check_command() {
     fi
 }
 
+# 检查系统版本和要求
+check_system_requirements() {
+    echo "检查系统要求..."
+    
+    # 检查是否为 Debian 12
+    if ! grep -q "bookworm" /etc/os-release 2>/dev/null; then
+        echo "警告: 此脚本主要为 Debian 12 (Bookworm) 设计，其他版本可能存在兼容性问题"
+    fi
+    
+    # 检查是否为 root 用户
+    if [ "$EUID" -ne 0 ]; then
+        echo "错误: 请使用 root 权限运行此脚本"
+        exit 1
+    fi
+    
+    # 检查内存
+    MEMORY_KB=$(grep MemTotal /proc/meminfo | awk '{print $2}')
+    MEMORY_MB=$((MEMORY_KB / 1024))
+    if [ $MEMORY_MB -lt 1024 ]; then
+        echo "警告: 当前内存 ${MEMORY_MB}MB，推荐至少 1GB 内存"
+    fi
+    
+    # 检查磁盘空间
+    DISK_AVAILABLE=$(df / | tail -1 | awk '{print $4}')
+    DISK_AVAILABLE_GB=$((DISK_AVAILABLE / 1024 / 1024))
+    if [ $DISK_AVAILABLE_GB -lt 10 ]; then
+        echo "警告: 根分区可用空间不足 10GB，可能影响安装"
+    fi
+    
+    echo "系统检查完成"
+}
+
+# 检查系统要求
+check_system_requirements
+
 # 更新系统
 echo "更新系统包..."
 apt update && apt upgrade -y
 check_command "系统更新"
 
+# 添加必要的官方仓库
+echo "添加官方仓库..."
+# 添加 Nginx 官方仓库
+curl https://nginx.org/keys/nginx_signing.key | gpg --dearmor \
+  | tee /usr/share/keyrings/nginx-archive-keyring.gpg >/dev/null
+echo "deb [signed-by=/usr/share/keyrings/nginx-archive-keyring.gpg] \
+  http://nginx.org/packages/mainline/debian bookworm nginx" \
+  | tee /etc/apt/sources.list.d/nginx.list
+echo -e "Package: *\nPin: origin nginx.org\nPin: release o=nginx\nPin-Priority: 900\n" \
+  | tee /etc/apt/preferences.d/99nginx
+
+# 添加 PHP 8.4 仓库（按官方推荐）
+curl -sSLo /tmp/php.gpg https://packages.sury.org/php/apt.gpg
+gpg --dearmor < /tmp/php.gpg > /usr/share/keyrings/php-archive-keyring.gpg
+echo "deb [signed-by=/usr/share/keyrings/php-archive-keyring.gpg] \
+  https://packages.sury.org/php/ bookworm main" > /etc/apt/sources.list.d/php.list
+
+apt update
+check_command "仓库添加"
+
 # 安装必要软件
 echo "安装必要软件..."
-apt install -y curl wget git unzip nginx mariadb-server redis-server php8.2-fpm \
-php8.2-common php8.2-mysql php8.2-gd php8.2-mbstring php8.2-xml php8.2-curl \
-php8.2-bcmath php8.2-zip php8.2-intl php8.2-redis certbot python3-certbot-nginx
+# 按照官方手册要求安装 PHP 8.4 及所有必需扩展
+apt install -y nginx mariadb-server redis-server certbot python3-certbot-nginx \
+  php8.4-{bcmath,bz2,cli,common,curl,fpm,gd,gmp,igbinary,intl,mbstring,mysql,opcache,readline,redis,soap,xml,yaml,zip}
 check_command "软件安装"
 
 # 配置MySQL
@@ -101,16 +156,46 @@ echo "安装PHP依赖..."
 composer install --no-dev --optimize-autoloader --ignore-platform-reqs
 check_command "Composer依赖安装"
 
-# 配置PHP
-echo "配置PHP..."
-sed -i 's/^;cgi.fix_pathinfo=1/cgi.fix_pathinfo=0/' /etc/php/8.2/fpm/php.ini
-sed -i 's/^max_execution_time = .*/max_execution_time = 300/' /etc/php/8.2/fpm/php.ini
-sed -i 's/^memory_limit = .*/memory_limit = 512M/' /etc/php/8.2/fpm/php.ini
-sed -i 's/^upload_max_filesize = .*/upload_max_filesize = 100M/' /etc/php/8.2/fpm/php.ini
-sed -i 's/^post_max_size = .*/post_max_size = 100M/' /etc/php/8.2/fpm/php.ini
+# 配置 Nginx 用户
+echo "配置 Nginx..."
+sed -i 's/^user.*/user www-data;/' /etc/nginx/nginx.conf
+systemctl start nginx && systemctl enable nginx
+check_command "Nginx 配置"
 
-systemctl restart php8.2-fpm
+# 配置PHP（使用 PHP 8.4）
+echo "配置PHP..."
+sed -i 's/^;cgi.fix_pathinfo=1/cgi.fix_pathinfo=0/' /etc/php/8.4/fpm/php.ini
+sed -i 's/^max_execution_time.*/max_execution_time = 300/' /etc/php/8.4/fpm/php.ini
+sed -i 's/^memory_limit.*/memory_limit = 256M/' /etc/php/8.4/fpm/php.ini
+sed -i 's/^post_max_size.*/post_max_size = 50M/' /etc/php/8.4/fpm/php.ini
+sed -i 's/^upload_max_filesize.*/upload_max_filesize = 50M/' /etc/php/8.4/fpm/php.ini
+sed -i 's/^;date.timezone.*/date.timezone = Asia\/Shanghai/' /etc/php/8.4/fpm/php.ini
+
+# 配置 PHP-FPM
+sed -i 's/^;listen.owner.*/listen.owner = www-data/' /etc/php/8.4/fpm/pool.d/www.conf
+sed -i 's/^;listen.group.*/listen.group = www-data/' /etc/php/8.4/fpm/pool.d/www.conf
+sed -i 's/^;listen.mode.*/listen.mode = 0660/' /etc/php/8.4/fpm/pool.d/www.conf
+
+systemctl restart php8.4-fpm && systemctl enable php8.4-fpm
 check_command "PHP配置"
+
+# 验证 PHP 扩展
+echo "验证 PHP 扩展..."
+REQUIRED_EXTENSIONS="bcmath curl fileinfo gmp json mbstring mysqli openssl pdo posix redis sodium xml yaml zip opcache"
+MISSING_EXTENSIONS=""
+
+for ext in $REQUIRED_EXTENSIONS; do
+    if ! php8.4 -m | grep -qi "^$ext\$"; then
+        MISSING_EXTENSIONS="$MISSING_EXTENSIONS $ext"
+    fi
+done
+
+if [ -n "$MISSING_EXTENSIONS" ]; then
+    echo "警告: 以下必需的 PHP 扩展未安装或未启用:$MISSING_EXTENSIONS"
+    echo "请检查 PHP 配置"
+else
+    echo "所有必需的 PHP 扩展已正确安装"
+fi
 
 # 创建环境配置文件
 cp config/.config.example.php config/.config.php
@@ -160,7 +245,7 @@ server {
 
     location ~ \.php\$ {
         include snippets/fastcgi-php.conf;
-        fastcgi_pass unix:/var/run/php/php8.2-fpm.sock;
+        fastcgi_pass unix:/var/run/php/php8.4-fpm.sock;
         fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
         include fastcgi_params;
     }
@@ -216,7 +301,7 @@ server {
 
     location ~ \.php\$ {
         include snippets/fastcgi-php.conf;
-        fastcgi_pass unix:/var/run/php/php8.2-fpm.sock;
+        fastcgi_pass unix:/var/run/php/php8.4-fpm.sock;
         fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
         include fastcgi_params;
     }
@@ -254,6 +339,14 @@ echo "=========================================="
 echo "SSPanel 安装完成！"
 echo "=========================================="
 
+# 输出版本信息
+echo "=============== 版本信息 ==============="
+echo "PHP 版本: $(php8.4 --version | head -n1)"
+echo "Nginx 版本: $(nginx -v 2>&1 | cut -d' ' -f3)"
+echo "MariaDB 版本: $(mysql --version | awk '{print $5}' | sed 's/,//')"
+echo "Redis 版本: $(redis-server --version | awk '{print $3}' | cut -d'=' -f2)"
+echo "SSPanel 版本: $PANEL_VERSION"
+
 # 输出重要信息
 echo "================= 重要信息 ================="
 echo "网站地址: https://$DOMAIN"
@@ -268,13 +361,15 @@ echo "=========================================="
 
 echo ""
 echo "后续步骤："
-echo "1. 运行数据库迁移："
+echo "1. 验证 PHP 扩展："
+echo "   php8.4 -m | grep -E '(bcmath|curl|gmp|mbstring|mysqli|opcache|posix|redis|sodium|xml|yaml|zip)'"
+echo "2. 运行数据库迁移："
 echo "   cd /www/wwwroot/$DOMAIN && php xcat Migration latest"
-echo "2. 创建管理员账户："
+echo "3. 创建管理员账户："
 echo "   cd /www/wwwroot/$DOMAIN && php xcat User createAdmin"
-echo "3. 导入默认设置："
+echo "4. 导入默认设置："
 echo "   cd /www/wwwroot/$DOMAIN && php xcat ImportSettings config/settings.sql"
-echo "4. 访问: https://$DOMAIN"
+echo "5. 访问: https://$DOMAIN"
 echo ""
 echo "如果SSL证书获取失败，请手动运行："
 echo "   certbot --nginx -d $DOMAIN -d www.$DOMAIN"
